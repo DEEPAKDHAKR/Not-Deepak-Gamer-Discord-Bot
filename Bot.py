@@ -1,146 +1,212 @@
+import os
+import discord
+from discord.ext import commands, tasks
+from dotenv import load_dotenv
+import random
+import asyncio
 
- * Full Discord.js v14 bot (single file)
- * - Commands: music, roles, giveaways, embed, channels, auto VC
- * - Not production hardened (use DB and error handling for production)
- *
- * npm: discord.js@14 @discordjs/voice ytdl-core ms
- */
+# Load .env
+load_dotenv()
+TOKEN = os.getenv("TOKEN")
 
-const { Client, GatewayIntentBits, Partials, Collection, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, PermissionsBitField, Routes, REST, SlashCommandBuilder } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, NoSubscriberBehavior, getVoiceConnection } = require('@discordjs/voice');
-const ytdl = require('ytdl-core');
-const ms = require('ms');
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-// ---------- CONFIG ----------
-const config = {
-  TOKEN: 'MTE4MDQ1ODA2NzQwMjQzNjYxOA.GI5V-L.TjPhSH7eTCksB0LX4yS9RqHV1-HjGJWjoxDC7E',
-  CLIENT_ID: '1180458067402436618',       // bot application id
-  GUILD_ID: 'YOUR_TEST_GUILD_ID_HERE',    // for quick guild command register (dev)
-  PREFIX: '/',
-};
-// -----------------------------
+# ---------- In-Memory Storage ----------
+giveaways = {}
+auto_vc_triggers = {}
+temp_roles = {}
+embeds_store = {}
+music_queues = {}
 
-// In-memory stores (replace with DB for real use)
-const giveaways = new Collection(); // giveawayId -> giveaway data
-const tempRoles = new Collection(); // userId -> timeout
-const autoVCTriggers = new Collection(); // channelId -> { deleteTimeMs, categoryId, private, memberLimit }
+# ---------- Events ----------
+@bot.event
+async def on_ready():
+    print(f"Bot is online as {bot.user}")
 
-// Music queues per guild
-const musicQueues = new Collection(); // guildId -> { connection, player, queue: [{url, title, requestedBy}], textChannel }
+# ---------- Basic Commands ----------
+@bot.command()
+async def ping(ctx):
+    await ctx.send(f"Pong! {round(bot.latency*1000)}ms")
 
-// Create client
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ],
-  partials: [Partials.Channel]
-});
+@bot.command()
+async def list(ctx):
+    commands_list = """
+🎯 Basic Commands
+!help
+!ping
+!list
 
-// ---------- REGISTER SLASH COMMANDS (guild-scoped for quick dev) ----------
-const commands = [
-  new SlashCommandBuilder().setName('ping').setDescription('Ping the bot.'),
-  new SlashCommandBuilder().setName('list').setDescription('List all commands.'),
-  new SlashCommandBuilder().setName('help').setDescription('Show help.'),
+🎵 Music System
+!join
+!left
+!play
+!skip
+!pause
+!stop
 
-  // Music
-  new SlashCommandBuilder().setName('join').setDescription('Join your VC.'),
-  new SlashCommandBuilder().setName('left').setDescription('Leave the voice channel.'),
-  new SlashCommandBuilder().setName('play').setDescription('Play a YouTube URL or search term.').addStringOption(opt => opt.setName('query').setDescription('YouTube URL or search').setRequired(true)),
-  new SlashCommandBuilder().setName('skip').setDescription('Skip current song.'),
-  new SlashCommandBuilder().setName('pause').setDescription('Pause playback.'),
-  new SlashCommandBuilder().setName('stop').setDescription('Stop and clear queue.'),
+🎉 Giveaway System
+!giveaway
 
-  // Giveaway
-  new SlashCommandBuilder().setName('giveaway').setDescription('Start a giveaway').addStringOption(o => o.setName('duration').setDescription('e.g. 1m, 1h').setRequired(true)).addIntegerOption(o => o.setName('winners').setDescription('Number of winners').setRequired(true)).addStringOption(o => o.setName('prize').setDescription('Prize').setRequired(true)),
+👤 Role System
+!role_add
+!role_remove
+!temp_role
 
-  // Roles
-  new SlashCommandBuilder().setName('role_add').setDescription('Add role to user').addRoleOption(o => o.setName('role').setDescription('Role to add').setRequired(true)).addUserOption(o => o.setName('member').setDescription('Member').setRequired(true)),
-  new SlashCommandBuilder().setName('role_remove').setDescription('Remove role from user').addRoleOption(o => o.setName('role').setDescription('Role to remove').setRequired(true)).addUserOption(o => o.setName('member').setDescription('Member').setRequired(true)),
-  new SlashCommandBuilder().setName('temp_role').setDescription('Add temporary role').addRoleOption(o => o.setName('role').setDescription('Role').setRequired(true)).addUserOption(o => o.setName('member').setDescription('Member').setRequired(true)).addStringOption(o => o.setName('time').setDescription('Duration (e.g. 10m)').setRequired(true)),
+📨 DM System
+!dm
 
-  // DM
-  new SlashCommandBuilder().setName('dm').setDescription('Send DM to user').addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('message').setDescription('Message').setRequired(true)),
+📝 Embed System
+!embedcreate
+!embeddelete
 
-  // Embed
-  new SlashCommandBuilder().setName('embedcreate').setDescription('Create embed message').addStringOption(o => o.setName('trigger').setDescription('trigger name').setRequired(true)).addStringOption(o => o.setName('title').setDescription('Embed title').setRequired(true)).addStringOption(o => o.setName('message').setDescription('Embed message').setRequired(true)),
-  new SlashCommandBuilder().setName('embeddelete').setDescription('Delete embed (by trigger name)').addStringOption(o => o.setName('name').setDescription('Embed trigger name').setRequired(true)),
+📁 Channel System
+!channelCreate
+!channelDelete
 
-  // Channel
-  new SlashCommandBuilder().setName('channelcreate').setDescription('Create a channel').addStringOption(o => o.setName('name').setDescription('Name').setRequired(true)).addStringOption(o => o.setName('type').setDescription('text or voice').setRequired(true)).addStringOption(o => o.setName('category').setDescription('Category name').setRequired(false)).addStringOption(o => o.setName('private').setDescription('Yes or No').setRequired(false)),
-  new SlashCommandBuilder().setName('channeldelete').setDescription('Delete a channel').addStringOption(o => o.setName('name').setDescription('Channel name').setRequired(true)).addStringOption(o => o.setName('type').setDescription('text or voice').setRequired(true)),
+🎧 Auto VC System
+!vc_create
+!create_vc_remove
+"""
+    await ctx.send(f"```{commands_list}```")
 
-  // Auto VC
-  new SlashCommandBuilder().setName('vc_create').setDescription('Register an auto-create VC trigger channel').addChannelOption(o => o.setName('channel').setDescription('Trigger channel (select)').setRequired(true)).addStringOption(o => o.setName('delete_time').setDescription('Delete time after leave (e.g. 30s, 1m)').setRequired(true)),
-  new SlashCommandBuilder().setName('create_vc_remove').setDescription('Remove channel from auto VC system').addStringOption(o => o.setName('channel_name').setDescription('Trigger channel name').setRequired(true)),
-];
+@bot.command()
+async def help(ctx):
+    await ctx.send("All commands are listed with !list")
 
-(async () => {
-  const rest = new REST({ version: '10' }).setToken(config.TOKEN);
-  try {
-    console.log('Registering slash commands to guild...');
-    await rest.put(Routes.applicationGuildCommands(config.CLIENT_ID, config.GUILD_ID), { body: commands.map(c => c.toJSON()) });
-    console.log('Commands registered.');
-  } catch (err) {
-    console.error('Failed to register commands', err);
-  }
-})();
+# ---------- Role Commands ----------
+@bot.command()
+async def role_add(ctx, member: discord.Member, role: discord.Role):
+    await member.add_roles(role)
+    await ctx.send(f"Added role {role.name} to {member.mention}")
 
-// ---------- Helpers ----------
-function ensureMusic(guildId) {
-  if (!musicQueues.has(guildId)) {
-    musicQueues.set(guildId, { connection: null, player: createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } }), queue: [], textChannel: null });
-  }
-  return musicQueues.get(guildId);
-}
+@bot.command()
+async def role_remove(ctx, member: discord.Member, role: discord.Role):
+    await member.remove_roles(role)
+    await ctx.send(f"Removed role {role.name} from {member.mention}")
 
-async function playNext(guildId) {
-  const q = musicQueues.get(guildId);
-  if (!q) return;
-  if (q.queue.length === 0) {
-    // stop and destroy connection after a timeout
-    const conn = getVoiceConnection(guildId);
-    if (conn) conn.destroy();
-    musicQueues.delete(guildId);
-    return;
-  }
-  const track = q.queue.shift();
-  const stream = ytdl(track.url, { filter: 'audioonly', highWaterMark: 1<<25 });
-  const resource = createAudioResource(stream);
-  q.player.play(resource);
-  q.textChannel?.send({ embeds: [new EmbedBuilder().setTitle('Now Playing').setDescription(`${track.title}\nRequested by: ${track.requestedBy}`).setTimestamp()] });
+@bot.command()
+async def temp_role(ctx, member: discord.Member, role: discord.Role, time: str):
+    await member.add_roles(role)
+    await ctx.send(f"Temporary role {role.name} added to {member.mention} for {time}")
+    seconds = int(time[:-1]) * (60 if time.endswith("m") else 1)
+    task = asyncio.create_task(remove_temp_role(member, role, seconds))
+    temp_roles[f"{member.id}:{role.id}"] = task
 
-  q.player.once(AudioPlayerStatus.Idle, () => playNext(guildId));
-}
+async def remove_temp_role(member, role, seconds):
+    await asyncio.sleep(seconds)
+    await member.remove_roles(role)
 
-// ---------- Buttons for music
-function musicControlRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('skip').setLabel('Skip').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('pause').setLabel('Pause').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('stop').setLabel('Stop').setStyle(ButtonStyle.Danger),
-  );
-}
+# ---------- DM Command ----------
+@bot.command()
+async def dm(ctx, member: discord.Member, *, message):
+    try:
+        await member.send(message)
+        await ctx.send(f"Sent DM to {member.mention}")
+    except:
+        await ctx.send(f"Could not DM {member.mention}")
 
-// ---------- Event: ready
-client.once('ready', () => {
-  console.log(`Logged in as ${client.user.tag}`);
-});
+# ---------- Embed Commands ----------
+@bot.command()
+async def embedcreate(ctx, trigger_name, title, *, message):
+    embeds_store[trigger_name] = {"title": title, "message": message}
+    await ctx.send(f"Embed saved with trigger: {trigger_name}")
 
-// ---------- Interaction Create (slash commands + buttons)
-client.on('interactionCreate', async (interaction) => {
-  try {
-    if (interaction.isButton()) {
-      // Music control buttons
-      const id = interaction.customId;
-      const guildId = interaction.guildId;
-      const q = ensureMusic(guildId);
-      if (!q) return interaction.reply({ content: 'No music session.', ephemeral: true });
-      if (id === 'skip') {
-        q.player.stop();
+@bot.command()
+async def embeddelete(ctx, trigger_name):
+    if trigger_name in embeds_store:
+        del embeds_store[trigger_name]
+        await ctx.send(f"Embed {trigger_name} deleted.")
+    else:
+        await ctx.send(f"Embed {trigger_name} not found.")
+
+# ---------- Channel Commands ----------
+@bot.command()
+async def channelCreate(ctx, name, type_channel, category=None, private="No"):
+    type_channel = type_channel.lower()
+    if type_channel == "voice":
+        ctype = discord.ChannelType.voice
+    else:
+        ctype = discord.ChannelType.text
+    overwrites = None
+    if private.lower() == "yes":
+        overwrites = {ctx.guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+    cat = None
+    if category:
+        cat = discord.utils.get(ctx.guild.categories, name=category)
+    ch = await ctx.guild.create_text_channel(name, category=cat, overwrites=overwrites) if ctype==discord.ChannelType.text else await ctx.guild.create_voice_channel(name, category=cat, overwrites=overwrites)
+    await ctx.send(f"Created {ch.name} ({ctype.name})")
+
+@bot.command()
+async def channelDelete(ctx, name, type_channel):
+    type_channel = type_channel.lower()
+    if type_channel == "voice":
+        ctype = discord.ChannelType.voice
+    else:
+        ctype = discord.ChannelType.text
+    ch = discord.utils.get(ctx.guild.channels, name=name, type=ctype)
+    if ch:
+        await ch.delete()
+        await ctx.send(f"Deleted {name}")
+    else:
+        await ctx.send(f"Channel not found.")
+
+# ---------- Giveaway Command ----------
+@bot.command()
+async def giveaway(ctx, duration: str, winners: int, *, prize):
+    seconds = int(duration[:-1]) * (60 if duration.endswith("m") else 1)
+    msg = await ctx.send(f"🎉 **GIVEAWAY** 🎉\nPrize: {prize}\nWinners: {winners}\nReact with 🎉 to enter!")
+    await msg.add_reaction("🎉")
+    giveaways[msg.id] = {"winners": winners, "prize": prize, "message": msg}
+    await asyncio.sleep(seconds)
+    msg = giveaways[msg.id]["message"]
+    reaction = discord.utils.get(msg.reactions, emoji="🎉")
+    users = await reaction.users().flatten() if reaction else []
+    entrants = [u for u in users if not u.bot]
+    if entrants:
+        winners_list = random.sample(entrants, min(winners, len(entrants)))
+        mentions = ", ".join([w.mention for w in winners_list])
+        await ctx.send(f"Giveaway ended! Winners: {mentions} — Prize: {prize}")
+    else:
+        await ctx.send("No valid entries.")
+    del giveaways[msg.id]
+
+# ---------- Auto VC System ----------
+@bot.command()
+async def vc_create(ctx, trigger_channel: discord.VoiceChannel, delete_time: str):
+    seconds = int(delete_time[:-1]) * (60 if delete_time.endswith("m") else 1)
+    auto_vc_triggers[trigger_channel.id] = {"delete_time": seconds}
+    await ctx.send(f"Auto VC trigger set for {trigger_channel.name} with delete time {delete_time}")
+
+@bot.command()
+async def create_vc_remove(ctx, trigger_channel_name):
+    channel = discord.utils.get(ctx.guild.channels, name=trigger_channel_name)
+    if channel and channel.id in auto_vc_triggers:
+        del auto_vc_triggers[channel.id]
+        await ctx.send(f"Removed {trigger_channel_name} from auto VC triggers")
+    else:
+        await ctx.send(f"Trigger channel not found.")
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    # User joined trigger channel
+    if after.channel and after.channel.id in auto_vc_triggers:
+        name = f"{member.name}'s VC"
+        ch = await member.guild.create_voice_channel(name)
+        await member.move_to(ch)
+        ch._auto_vc_delete_time = auto_vc_triggers[after.channel.id]["delete_time"]
+    # Check if auto VC empty
+    if before.channel and hasattr(before.channel, "_auto_vc_delete_time"):
+        if len(before.channel.members) == 0:
+            await asyncio.sleep(before.channel._auto_vc_delete_time)
+            if len(before.channel.members) == 0:
+                await before.channel.delete()
+
+# ---------- Music System Placeholder ----------
+# You can add YouTube / Spotify music system using discord.py voice here
+
+# ---------- Run Bot ----------
+bot.run(TOKEN)        q.player.stop();
         return interaction.reply({ content: 'Skipped.', ephemeral: true });
       }
       if (id === 'pause') {
