@@ -1,5 +1,4 @@
 
-/**
  * Full Discord.js v14 bot (single file)
  * - Commands: music, roles, giveaways, embed, channels, auto VC
  * - Not production hardened (use DB and error handling for production)
