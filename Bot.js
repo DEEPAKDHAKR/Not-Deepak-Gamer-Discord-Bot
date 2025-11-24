@@ -14,8 +14,8 @@ const ms = require('ms');
 
 // ---------- CONFIG ----------
 const config = {
-  TOKEN: 'YOUR_BOT_TOKEN_HERE',
-  CLIENT_ID: 'YOUR_CLIENT_ID_HERE',       // bot application id
+  TOKEN: 'MTE4MDQ1ODA2NzQwMjQzNjYxOA.GI5V-L.TjPhSH7eTCksB0LX4yS9RqHV1-HjGJWjoxDC7E',
+  CLIENT_ID: '1180458067402436618',       // bot application id
   GUILD_ID: 'YOUR_TEST_GUILD_ID_HERE',    // for quick guild command register (dev)
   PREFIX: '/',
 };
